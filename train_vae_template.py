@@ -120,59 +120,80 @@ def forward(input):
 
     # (1) linear
     # H = W_i \times input + Bi
+    Hi = Wi @ input + Bi
 
     # (2) ReLU
     # H = ReLU(H)
+    Hi_a = relu(Hi)
 
     # (3) h > mu
     # Estimate the means of the latent distributions
     # mean = Wm \times H + Bm
+    mean = Wm @ Hi_a + Bm
 
     # (4) h > log var
     # Estimate the (diagonal) variances of the latent distributions
     # logvar = Wv \times H + Bv
+    logvar = Wv @ Hi_a + Bv
 
     # (5) sample the random variable z from means and variances (refer to the "reparameterization trick" to do this)
+    eps = sample_unit_gaussian(latent_size)
+    z = np.exp(logvar) * eps + mean
 
     # (6) decode z
     # D = Wd \times z + Bd
+    D = Wd @ z + Bd
 
     # (7) relu
     # D = ReLU(D)
+    D_a = relu(D)
 
     # (8) dec to output
     # output = Wo \times D + Bo
+    output = Wo @ D_a + Bo
 
-    # # (9) dec to p(x)
+    # (9) dec to p(x)
     # and (10) reconstruction loss function (same as the
     if loss_function == 'bce':
-
-        # BCE Loss
+        p = sigmoid(output)
+        loss = -np.sum(np.multiply(input, np.log(p)) + np.multiply(1 - input, np.log(1 - p)))
 
     elif loss_function == 'mse':
-
-        # MSE Loss
+        p = output
+        loss = np.sum(0.5 * (p - input) ** 2)
 
     # variational loss with KL Divergence between P(z|x) and U(0, 1)
-
-    #kl_div_loss = - 0.5 * (1 + logvar - mean^2 - e^logvar)
+    kl_div_loss = - 0.5 * (1 + logvar - mean ^ 2 - np.exp(logvar))
 
     # your loss is the combination of
-    #loss = rec_loss + kl_div_loss
+    comb_loss = loss + kl_div_loss
 
     # Store the activations for the backward pass
-    # activations = ( ... )
+    activations = ( eps, Hi_a, mean, logvar, z, D_a, output, p, loss, kl_div_loss )
 
     return loss, kl_div_loss, activations
 
 
 def decode(z):
 
-    # basically the decoding part in the forward pass: maaping z to p
+    # (6) decode z
+    # D = Wd \times z + Bd
+    D = Wd @ z + Bd
 
-    # o = W_d \times z + B_d
+    # (7) relu
+    # D = ReLU(D)
+    D_a = relu(D)
+
+    # (8) dec to output
+    # output = Wo \times D + Bo
+    output = Wo @ D_a + Bo
 
     # p = sigmoid(o) if bce or o if mse
+    if loss_function == 'bce':
+        p = sigmoid(output)
+
+    elif loss_function == 'mse':
+        p = output
 
     return p
 
@@ -193,7 +214,7 @@ def backward(input, activations, scale=True, alpha=1.0):
     batch_size = input.shape[-1]
     scaler = batch_size if scale else 1
 
-    eps, h, mean, logvar, z, dec, output, p, _, _ = activations
+    eps, h, mean, logvar, z, dec, output, p, _, kl = activations
 
     # Perform your BACKWARD PASS (similar to the auto-encoder code)
 
@@ -208,6 +229,71 @@ def backward(input, activations, scale=True, alpha=1.0):
     # In order to do that, one random variable must stay the same between forward and backward passes.
 
     # The rest of the backward pass should be the same as the AE
+
+    #backprob from (10) to (8)
+    if loss_function=='mse':
+        dl_dp = p - input
+        # He found that normalizing the loss and gradient by batch size makes learning more stable
+        if scale:
+            dl_dp = dl_dp / batch_size
+        dl_doutput = dl_dp
+    elif loss_function == 'bce':
+        dl_dp = -1 * (input / p - (1 - input) / (1 - p))
+        dl_dp = dl_dp
+        if scale:
+            dl_dp = dl_dp / batch_size
+        dl_doutput = np.multiply(dl_dp, dsigmoid(p))
+
+    #backprob from (8) to (7) through fully connected
+    dl_ddec = np.dot(Wo.T, dl_doutput)
+    dWo += np.dot(dl_doutput, dec.T)
+    if batch_size == 1:
+        dBo += dl_doutput
+    else:
+        dBo += np.sum(dl_doutput, axis=-1, keepdims=True)
+
+    #backprob from (7) to (6) through ReLu
+    dl_ddec = np.multiply(drelu(dec), dl_ddec)
+
+    #backprob from (6) to (5) through fully connected
+    dl_dz = np.dot(Wd.T, dl_ddec)
+    dWd += np.dot(dl_ddec, z.T)
+    if batch_size == 1:
+        dBd += dl_ddec
+    else:
+        dBd += np.sum(dl_ddec, axis=-1, keepdims=True)
+
+    #backprob from (5) to (4) Reparametrization trick
+    dl_dmean = np.multiply(1, dl_dz) + mean
+    dl_dlogvar = np.multiply(eps*np.exp(logvar), dl_dz) - 0.5 * (1 - np.exp(logvar))
+    if batch_size == 1:
+        dBm += dl_dmean
+        dBv += dl_dvar
+    else:
+        dBm += np.sum(dl_dmean, axis=-1, keepdims=True)
+        dBv += np.sum(dl_dvar, axis=-1, keepdims=True)
+
+    #backprob from (4) to (3)
+    dl_dh = np.multiply(dl_dmean, Wm) + np.multiply(dl_dlogvar, Wv)
+    dWm += np.dot(dl_dmean, H.T)
+    dWv += np.dot(dl_dlogvar, H.T)
+    if batch_size == 1:
+        dBm += dl_dmean
+        dBv += dl_dlogvar
+    else:
+        dBm += np.sum(dl_dmean, axis=-1, keepdims=True)
+        dBv += np.sum(dl_dlogvar, axis=-1, keepdims=True)
+
+    #backprob from (3) to (2)
+    dl_dh = np.multiply(drelu(h), dl_dh)
+
+    #backprob from (2) to (1)
+    dl_dinput = np.dot(Wi.T, dl_dh)
+    dWi += np.dot(dl_dh, input.T)
+    if batch_size == 1:
+        dBi += dl_dh
+    else:
+        dBi += np.sum(dl_dh, axis=-1, keepdims=True)
 
     gradients = (dWi, dWm, dWv, dWd, dWo, dBi, dBm, dBv, dBd, dBo)
 
