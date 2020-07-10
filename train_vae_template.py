@@ -137,8 +137,8 @@ def forward(input):
     logvar = Wv @ Hi_a + Bv
 
     # (5) sample the random variable z from means and variances (refer to the "reparameterization trick" to do this)
-    eps = sample_unit_gaussian(latent_size)
-    z = np.exp(logvar) * eps + mean
+    eps = np.array([sample_unit_gaussian(latent_size) for i in range(batch_size)]).T
+    z = mean + eps * np.exp(logvar)
 
     # (6) decode z
     # D = Wd \times z + Bd
@@ -163,7 +163,7 @@ def forward(input):
         loss = np.sum(0.5 * (p - input) ** 2)
 
     # variational loss with KL Divergence between P(z|x) and U(0, 1)
-    kl_div_loss = - 0.5 * (1 + logvar - mean ^ 2 - np.exp(logvar))
+    kl_div_loss = np.sum(- 0.5 * (1 + logvar - np.square(mean) - np.exp(logvar)))
 
     # your loss is the combination of
     comb_loss = loss + kl_div_loss
@@ -171,7 +171,7 @@ def forward(input):
     # Store the activations for the backward pass
     activations = ( eps, Hi_a, mean, logvar, z, D_a, output, p, loss, kl_div_loss )
 
-    return loss, kl_div_loss, activations
+    return comb_loss, kl_div_loss, activations
 
 
 def decode(z):
@@ -268,15 +268,15 @@ def backward(input, activations, scale=True, alpha=1.0):
     dl_dlogvar = np.multiply(eps*np.exp(logvar), dl_dz) - 0.5 * (1 - np.exp(logvar))
     if batch_size == 1:
         dBm += dl_dmean
-        dBv += dl_dvar
+        dBv += dl_dlogvar
     else:
         dBm += np.sum(dl_dmean, axis=-1, keepdims=True)
-        dBv += np.sum(dl_dvar, axis=-1, keepdims=True)
+        dBv += np.sum(dl_dlogvar, axis=-1, keepdims=True)
 
     #backprob from (4) to (3)
-    dl_dh = np.multiply(dl_dmean, Wm) + np.multiply(dl_dlogvar, Wv)
-    dWm += np.dot(dl_dmean, H.T)
-    dWv += np.dot(dl_dlogvar, H.T)
+    dl_dh = np.dot(Wm.T, dl_dmean) + np.dot(Wv.T, dl_dlogvar)
+    dWm += np.dot(dl_dmean, h.T)
+    dWv += np.dot(dl_dlogvar, h.T)
     if batch_size == 1:
         dBm += dl_dmean
         dBv += dl_dlogvar
@@ -354,7 +354,7 @@ def train():
             x_i = get_minibatch(batch_size, i, rand_indices)
             bsz = x_i.shape[-1]
 
-            loss, acts = forward(x_i, alpha=alpha)
+            loss, kl_loss, acts = forward(x_i, alpha=alpha)
             _, _, _, _, z, _, _, _, rec_loss, kl_loss = acts
             # lol I computed kl_div again here
 
@@ -411,7 +411,7 @@ def grad_check():
 
     actual_bsz = x.shape[-1]  # because x can be the last batch in the dataset which has bsz < 8
 
-    loss, acts = forward(x)
+    loss, kl_loss, acts = forward(x)
 
     gradients = backward(x, acts, scale=False)
 
@@ -431,10 +431,10 @@ def grad_check():
             w = weight.flat[i]
 
             weight.flat[i] = w + delta
-            loss_positive, _ = forward(x)
+            loss_positive, _, _ = forward(x)
 
             weight.flat[i] = w - delta
-            loss_negative, _ = forward(x)
+            loss_negative, _, _ = forward(x)
 
             weight.flat[i] = w  # reset old value for this parameter
 
