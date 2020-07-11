@@ -21,7 +21,7 @@ n_samples = ff.shape[0]
 # Number of parameters
 input_size = 560
 hidden_size = 128
-latent_size = 16
+latent_size = 32
 std = 0.02
 learning_rate = 0.02
 loss_function = 'bce'  # mse or bce
@@ -110,7 +110,7 @@ Wo = np.random.uniform(-std, std, size=(input_size, hidden_size))
 Bo = np.random.uniform(-std, std, size=(input_size, 1))
 
 
-def forward(input):
+def forward(input, eps=None):
 
     # YOUR FORWARD PASS FROM HERE
     batch_size = input.shape[-1]
@@ -137,7 +137,8 @@ def forward(input):
     logvar = Wv @ Hi_a + Bv
 
     # (5) sample the random variable z from means and variances (refer to the "reparameterization trick" to do this)
-    eps = np.array([sample_unit_gaussian(latent_size) for i in range(batch_size)]).T
+    if eps is None:
+        eps = np.array([sample_unit_gaussian(latent_size) for i in range(batch_size)]).T
     z = mean + eps * np.exp(logvar)
 
     # (6) decode z
@@ -266,12 +267,6 @@ def backward(input, activations, scale=True, alpha=1.0):
     #backprob from (5) to (4) Reparametrization trick
     dl_dmean = np.multiply(1, dl_dz) + mean
     dl_dlogvar = np.multiply(eps*np.exp(logvar), dl_dz) - 0.5 * (1 - np.exp(logvar))
-    if batch_size == 1:
-        dBm += dl_dmean
-        dBv += dl_dlogvar
-    else:
-        dBm += np.sum(dl_dmean, axis=-1, keepdims=True)
-        dBv += np.sum(dl_dlogvar, axis=-1, keepdims=True)
 
     #backprob from (4) to (3)
     dl_dh = np.dot(Wm.T, dl_dmean) + np.dot(Wv.T, dl_dlogvar)
@@ -354,7 +349,7 @@ def train():
             x_i = get_minibatch(batch_size, i, rand_indices)
             bsz = x_i.shape[-1]
 
-            loss, kl_loss, acts = forward(x_i, alpha=alpha)
+            loss, kl_loss, acts = forward(x_i)#, alpha=alpha)
             _, _, _, _, z, _, _, _, rec_loss, kl_loss = acts
             # lol I computed kl_div again here
 
@@ -362,7 +357,7 @@ def train():
             total_kl_loss += kl_loss
             total_pixels += bsz * 560
 
-            gradients = backward(x_i, acts, alpha=alpha)
+            gradients = backward(x_i, acts)#, alpha=alpha)
 
             dWi, dWm, dWv, dWd, dWo, dBi, dBm, dBv, dBd, dBo= gradients
 
@@ -425,16 +420,16 @@ def grad_check():
         assert (weight.shape == grad.shape), str_
 
         print("Checking grads for weights %s ..." % name)
-        n_warnings = 0
+        n_warnings = 0.0
         for i in range(weight.size):
 
             w = weight.flat[i]
 
             weight.flat[i] = w + delta
-            loss_positive, _, _ = forward(x)
+            loss_positive, _, acts_p = forward(x, acts[0])
 
             weight.flat[i] = w - delta
-            loss_negative, _, _ = forward(x)
+            loss_negative, _, acts_n = forward(x, acts[0])
 
             weight.flat[i] = w  # reset old value for this parameter
 
@@ -444,9 +439,9 @@ def grad_check():
             rel_error = abs(grad_analytic - grad_numerical) / abs(grad_numerical + grad_analytic)
 
             if rel_error > 0.001:
-                n_warnings += 1
+                n_warnings += 1.0
                 # print('WARNING %f, %f => %e ' % (grad_numerical, grad_analytic, rel_error))
-        print("%d gradient mismatch warnings found. " % n_warnings)
+        print("%.2f gradient mismatch warnings found. " % (n_warnings/weight.size*100.0))
 
     return
 
@@ -470,6 +465,15 @@ def eval():
         sample_ = np.resize(sample_, (1, 560)).T
 
         # Here the sample_ is processed by the network to produce the reconstruction
+        sample_ = sample_.flatten()
+
+        loss, kl_loss, activations = forward(sample_)
+
+        eps, h, mean, logvar, z, dec, output, p, _, kl = activations
+        img = p * 255
+
+        print(loss)
+
 
         img = np.sum(p, axis=-1)
         img = img / n_samples
