@@ -24,7 +24,7 @@ hidden_size = 128
 latent_size = 32
 std = 0.02
 learning_rate = 0.02
-loss_function = 'bce'  # mse or bce
+loss_function = 'mse'  # mse or bce
 beta1=0.9
 beta2=0.999
 
@@ -268,7 +268,7 @@ def backward(input, activations, scale=True, alpha=1.0):
     dl_dmean = np.multiply(1, dl_dz) + mean
     dl_dlogvar = np.multiply(eps*np.exp(logvar), dl_dz) - 0.5 * (1 - np.exp(logvar))
 
-    #backprob from (4) to (3)
+    #backprob from (4) to (2) and from (3) to (2)
     dl_dh = np.dot(Wm.T, dl_dmean) + np.dot(Wv.T, dl_dlogvar)
     dWm += np.dot(dl_dmean, h.T)
     dWv += np.dot(dl_dlogvar, h.T)
@@ -279,10 +279,10 @@ def backward(input, activations, scale=True, alpha=1.0):
         dBm += np.sum(dl_dmean, axis=-1, keepdims=True)
         dBv += np.sum(dl_dlogvar, axis=-1, keepdims=True)
 
-    #backprob from (3) to (2)
+    #backprob from (2) to (1)
     dl_dh = np.multiply(drelu(h), dl_dh)
 
-    #backprob from (2) to (1)
+    #backprob from (1) to start
     dl_dinput = np.dot(Wi.T, dl_dh)
     dWi += np.dot(dl_dh, input.T)
     if batch_size == 1:
